@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-# Print processes which have session bus connections
+
+# Print services, objects and interfaces available in eith system or session dbus.
+
 # Copyright 2013 Colin Walters <walters@verbum.org>
 # Licensed under the new-BSD license (http://www.opensource.org/licenses/bsd-license.php)
 
+# Ideas from the following page were used:
+# https://unix.stackexchange.com/questions/203410/how-to-list-all-object-paths-under-a-dbus-service
+
 import sys
 import argparse
-
-#sys.path.append("/usr/lib/python3/dist-packages/")
+import fnmatch
 
 import os
 #import gobject
@@ -20,17 +24,19 @@ parser = argparse.ArgumentParser(description='query dbus tree')
 #parser.add_argument('-S','--session', nargs='?', help='query SessionBus',          required=False, default=False)
 parser.add_argument('-t','--table',  action='store_true', default=False,  help='Show results as a table instead of a tree')
 parser.add_argument('-p','--pid',  action='store_true', default=False,  help='Show the process id that offers the service')
-parser.add_argument('-c','--command_line',  action='store_true', default=False,  help='Show the command line of the process that offers the service')
+parser.add_argument('-c','--command-line',  action='store_true', default=False,  help='Show the command line of the process that offers the service')
 parser.add_argument('-a','--all',  action='store_true', default=False,  help='Show all services, not only well-known service')
-parser.add_argument('-s','--system',  action='store_true', default=True,  help='query SystemBus (default)')
-parser.add_argument('-S','--session', action='store_true', default=False, help='query SessionBus')
-#parser.add_argument('-p','--pattern', help='search pattern',            required=False, default=None)
+parser.add_argument('--system',  action='store_true', default=True,  help='query SystemBus (default)')
+parser.add_argument('--session', action='store_true', default=False, help='query SessionBus')
+parser.add_argument('-s','--service', help='search pattern', required=False, default="*")
+parser.add_argument('-o','--object-path', help='search pattern', required=False, default=None)
+parser.add_argument('-i','--interface', help='search pattern', required=False, default=None)
 args = vars(parser.parse_args())
 
 dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 #loop = gobject.MainLoop()
 
-print(args.keys())
+#print(args.keys())
 
 if args["session"]:
     #print("Using session bus")
@@ -45,26 +51,54 @@ connections = driver.ListNames()
 # pid_to_count = {}
 # pid_to_connections = defaultdict(list)
 
-print(args["command_line"])
+#print(args["command_line"])
 if args["table"]:
     tree=False
 else:
     tree=True
 
+depth = 1
+if args["object_path"]:
+    depth = 2
+if args["interface"]:
+    depth = 3
+    if not args["object_path"]:
+        args["object_path"] = "*"
+print("Depth is %i" % depth)
+print("Service pattern is %s" % args["service"])
+if args["object_path"]:
+    print("Object path pattern is %s" % args["object_path"])
+if args["interface"]:
+    print("Interface pattern is %s" % args["interface"])
 def get_command_line(pid):
     #print("In function get_command_line")
     try:
-        cmdline = os.readlink('/proc/%d/exe' % (pid, ))
+        #cmdline = os.readlink('/proc/%d/exe' % (pid, ))
+        with open("/proc/%d/cmdline" % (pid, )) as f:
+            cmdline = f.readline().replace("\0", " ")
     except:
         cmdline = '(unknown)'
     #print(cmdline)
     return cmdline
 
+columns = ["Service"]
+if depth >= 2:
+    columns.append("Object_path")
+if depth >= 3:
+    columns.append("Interface")
+if "pid" in args:
+    columns.append("Pid")
+if "command_line" in args:
+    columns.append("Command")
 if not tree:
-    print("Service\tObject_path\tInterface")
+    print("\t".join(columns))
 
-def rec_intro(bus, service, object_path):
-    if tree:
+def rec_intro(bus, service, object_path, cursor):
+    #print("In rec_intro")
+    skip_object = not fnmatch.fnmatch(object_path, args["object_path"])
+    if skip_object:
+        print("Skipping object %s" % object_path)
+    if tree and not skip_object:
         print("\t%s" % object_path)
     obj = bus.get_object(service, object_path)
     iface = dbus.Interface(obj, 'org.freedesktop.DBus.Introspectable')
@@ -79,14 +113,23 @@ def rec_intro(bus, service, object_path):
                 object_path = ''
             new_path = '/'.join((object_path, child.attrib['name']))
             subobjects.append(new_path)
-        elif child.tag == "interface":
+        elif child.tag == "interface" and not skip_object:
             interface = child.attrib['name']
+            skip_interface = args["interface"] and not fnmatch.fnmatch(interface, args["interface"])
             if tree:
-                print("\t\t%s" % interface)
+                if depth == 3 and not skip_interface:
+                    print("\t\t%s" % interface)
             else:
-                print("%s\t%s\t%s" % (service, object_path, interface))
+                print("%s\t%s" % (service, object_path), end="")
+                if depth == 3 and not skip_interface:
+                    print("\t%s" % interface, end="")
+                if args["pid"]:
+                    print("\t%s" % cursor["pid"], end="")
+                if args["command_line"]:
+                    print("\t%s" % cursor["command_line"], end="")
+                print()
     for new_path in subobjects:
-        rec_intro(bus, service, new_path)
+        rec_intro(bus, service, new_path, cursor)
 
 def get_managed_object(service="org.bluez"):
     dbus_object = bus.get_object(service, "/")
@@ -96,22 +139,36 @@ def get_managed_object(service="org.bluez"):
 
 for service in connections:
     if not args["all"] and service.startswith(':'): continue
+    if not fnmatch.fnmatch(service, args["service"]):
+        continue
     #print(args["command_line"])
     try:
+        cursor = {"service" : service}
+        if args["pid"] or args["command_line"]:
+            cursor["pid"] = int(driver.GetConnectionUnixProcessID(service))
+        if args["command_line"]:
+            #print("here")
+            cursor["command_line"] = get_command_line(cursor["pid"])
         if tree:
             print(service, end="")
-            if args["pid"] or args["command_line"]:
-                pid = int(driver.GetConnectionUnixProcessID(service))
             if args["pid"]:
-                print("\t%i" % pid, end="")
+                print("\t%i" % cursor["pid"], end="")
             if args["command_line"]:
-                #print("here")
-                pid = int(driver.GetConnectionUnixProcessID(service))
-                cmd = get_command_line(pid)
-                print("\t%s" % cmd, end="")
+                print("\t%s" % cursor["command_line"], end="")
             print()
+            if depth > 1:
+                rec_intro(bus, service, "/", cursor)
+        else:
+            if depth > 1:
+                rec_intro(bus, service, "/", cursor)
+            else:
+                print(service, end="")
+                if args["pid"]:
+                    print("\t%i" % cursor["pid"], end="")
+                if args["command_line"]:
+                    print("\t%s" % cursor["command_line"], end="")
+                print()
 
-        rec_intro(bus, service, "/")
         # ownerpid = driver.GetConnectionUnixProcessID(name)
         # pid_to_connections[ownerpid].append(name)
         # count = pid_to_count.get(ownerpid, 0)
@@ -119,20 +176,3 @@ for service in connections:
     except:
         continue
 
-# for pid in sorted(pid_to_count.keys()):
-#     try:
-#         cmdline = os.readlink('/proc/%d/exe' % (pid, ))
-#     except:
-#         cmdline = '(unknown)'
-#     print("%s (%d): %d connections" % (cmdline, pid, pid_to_count[pid]))
-
-# for pid in sorted(pid_to_connections.keys()):
-#     try:
-#         cmdline = os.readlink('/proc/%d/exe' % (pid, ))
-#     except:
-#         cmdline = '(unknown)'
-#     connections =  pid_to_connections[pid]
-#     print("%s (%d): %d connections" % (cmdline, pid, len(connections)))
-#     for c in connections:
-#         print("\t%s" % c)
-    
