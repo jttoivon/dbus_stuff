@@ -28,6 +28,7 @@ parser.add_argument('-c','--command-line',  action='store_true', default=False, 
 parser.add_argument('-a','--all',  action='store_true', default=False,  help='Show all services, not only well-known service')
 parser.add_argument('--system',  action='store_true', default=True,  help='query SystemBus (default)')
 parser.add_argument('--session', action='store_true', default=False, help='query SessionBus')
+parser.add_argument('-d', '--debug', action='store_true', default=False, help='Print debug information')
 parser.add_argument('-s','--service', help='search pattern', required=False, default="*")
 parser.add_argument('-o','--object-path', help='search pattern', required=False, default=None)
 parser.add_argument('-i','--interface', help='search pattern', required=False, default=None)
@@ -51,7 +52,9 @@ connections = driver.ListNames()
 # pid_to_count = {}
 # pid_to_connections = defaultdict(list)
 
-#print(args["command_line"])
+debug = args["debug"]
+if debug:
+    print("Got the following command line args: %s" ,args["command_line"])
 if args["table"]:
     tree=False
 else:
@@ -64,12 +67,14 @@ if args["interface"]:
     depth = 3
     if not args["object_path"]:
         args["object_path"] = "*"
-print("Depth is %i" % depth)
-print("Service pattern is %s" % args["service"])
-if args["object_path"]:
-    print("Object path pattern is %s" % args["object_path"])
-if args["interface"]:
-    print("Interface pattern is %s" % args["interface"])
+
+if debug:
+    print("Depth is %i" % depth)
+    print("Service pattern is %s" % args["service"])
+    if args["object_path"]:
+        print("Object path pattern is %s" % args["object_path"])
+    if args["interface"]:
+        print("Interface pattern is %s" % args["interface"])
 def get_command_line(pid):
     #print("In function get_command_line")
     try:
@@ -96,8 +101,8 @@ if not tree:
 def rec_intro(bus, service, object_path, cursor):
     #print("In rec_intro")
     skip_object = not fnmatch.fnmatch(object_path, args["object_path"])
-    if skip_object:
-        print("Skipping object %s" % object_path)
+    #if skip_object:
+    #    print("Skipping object %s" % object_path)
     if tree and not skip_object:
         print("\t%s" % object_path)
     obj = bus.get_object(service, object_path)
@@ -105,6 +110,7 @@ def rec_intro(bus, service, object_path, cursor):
     try:
         xml_string = iface.Introspect()
     except DBusException:   # No root object or no Introspectable interface
+        print("Got an exception when trying introspection")
         return
     subobjects = []
     for child in ElementTree.fromstring(xml_string):
@@ -116,10 +122,12 @@ def rec_intro(bus, service, object_path, cursor):
         elif child.tag == "interface" and not skip_object:
             interface = child.attrib['name']
             skip_interface = args["interface"] and not fnmatch.fnmatch(interface, args["interface"])
+            #if skip_interface:
+            #    print("Skipping interface %s" % interface)
             if tree:
                 if depth == 3 and not skip_interface:
                     print("\t\t%s" % interface)
-            else:
+            elif not skip_interface:
                 print("%s\t%s" % (service, object_path), end="")
                 if depth == 3 and not skip_interface:
                     print("\t%s" % interface, end="")
@@ -131,11 +139,6 @@ def rec_intro(bus, service, object_path, cursor):
     for new_path in subobjects:
         rec_intro(bus, service, new_path, cursor)
 
-def get_managed_object(service="org.bluez"):
-    dbus_object = bus.get_object(service, "/")
-    dbus_iface  = dbus.Interface(dbus_object, 'org.freedesktop.DBus.ObjectManager')
-    L = dbus_iface.GetManagedObjects()
-    return L
 
 for service in connections:
     if not args["all"] and service.startswith(':'): continue
@@ -169,10 +172,13 @@ for service in connections:
                     print("\t%s" % cursor["command_line"], end="")
                 print()
 
-        # ownerpid = driver.GetConnectionUnixProcessID(name)
-        # pid_to_connections[ownerpid].append(name)
-        # count = pid_to_count.get(ownerpid, 0)
-        # pid_to_count[ownerpid] = count + 1
     except:
+        print("Got an exception in the main loop")
         continue
 
+# Not used currently
+def get_managed_object(service="org.bluez"):
+    dbus_object = bus.get_object(service, "/")
+    dbus_iface  = dbus.Interface(dbus_object, 'org.freedesktop.DBus.ObjectManager')
+    L = dbus_iface.GetManagedObjects()
+    return L
