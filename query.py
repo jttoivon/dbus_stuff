@@ -27,8 +27,6 @@ from collections import defaultdict
 from xml.etree import ElementTree
 
 parser = argparse.ArgumentParser(description='Query dbus tree')
-#parser.add_argument('-s','--system',  nargs='?', help='query SystemBus (default)', required=False, default=True)
-#parser.add_argument('-S','--session', nargs='?', help='query SessionBus',          required=False, default=False)
 parser.add_argument('-t','--table',  action='store_true', default=False,  help='Show results as a table instead of a tree')
 parser.add_argument('-p','--pid',  action='store_true', default=False,  help='Show the process id that offers the service')
 parser.add_argument('-c','--command-line',  action='store_true', default=False,  help='Show the command line of the process that offers the service')
@@ -39,10 +37,15 @@ parser.add_argument('-d', '--debug', action='store_true', default=False, help='P
 parser.add_argument('-s','--service', help='search pattern', required=False, default="*")
 parser.add_argument('-o','--object-path', help='search pattern', required=False, default=None)
 parser.add_argument('-i','--interface', help='search pattern', required=False, default=None)
+parser.add_argument('--timeout', help='Timeout in seconds', required=False, default=None)
 args = vars(parser.parse_args())
 
 debug = args["debug"]
 
+if args["timeout"]:
+    timeout = float(args["timeout"])
+else:
+    timeout=2
 
 dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 #loop = gobject.MainLoop()
@@ -87,12 +90,13 @@ if debug:
         print("Object path pattern is %s" % args["object_path"])
     if args["interface"]:
         print("Interface pattern is %s" % args["interface"])
+
 def get_command_line(pid):
     #print("In function get_command_line")
     try:
         #cmdline = os.readlink('/proc/%d/exe' % (pid, ))
         with open("/proc/%d/cmdline" % (pid, )) as f:
-            cmdline = f.readline().replace("\0", " ")
+            cmdline = f.readline().replace("\0", " ").strip()
     except:
         cmdline = '(unknown)'
     #print(cmdline)
@@ -118,6 +122,16 @@ def print_service_pid_command(cursor, sep=" "):
         print("%s%s" % (sep, cursor["command_line"]), end="")
     print()
 
+def print_pid_command(cursor, sep=" "):
+    if args["pid"] or args["command_line"]:
+        L = []
+        if args["pid"]:
+            L.append("%i" % (cursor["pid"]))
+        if args["command_line"]:
+            L.append("'%s'" % (cursor["command_line"]))
+        return " (%s)" % sep.join(L)
+    else:
+        return ""
 
 def rec_intro(bus, service, object_path, cursor, service_printed=False):
     object_printed = False
@@ -133,9 +147,23 @@ def rec_intro(bus, service, object_path, cursor, service_printed=False):
     obj = bus.get_object(service, object_path)
     iface = dbus.Interface(obj, 'org.freedesktop.DBus.Introspectable')
     try:
-        xml_string = iface.Introspect()
-    except DBusException:   # No root object or no Introspectable interface
-        print("Got an exception when trying introspection")
+        #xml_string = iface.Introspect()
+        # The above line has timeout of 25+25 seconds. The below call allows us to set
+        # the timeout ourselves.
+        xml_string = bus.call_blocking(service, object_path, 'org.freedesktop.DBus.Introspectable', "Introspect", 
+            "", [], timeout=timeout, byte_arrays=False)
+    except dbus.exceptions.DBusException as e:   # No root object or no Introspectable interface
+        #print("Got an exception when trying introspection")
+        #print(type(e))
+        #print(e)
+        name = e.get_dbus_name()
+        if name == "org.freedesktop.DBus.Error.UnknownObject":
+            print("The service %s%s has no root object" % (service, print_pid_command(cursor)), file=sys.stderr)
+        elif name == "org.freedesktop.DBus.Error.NoReply":
+            print("The service %s%s did not reply to introspection within time of %.2f seconds" % (service, print_pid_command(cursor), timeout), file=sys.stderr)
+        else:
+            print("Message %s" % e.get_dbus_message(), file=sys.stderr)
+            print("Name %s" % name, file=sys.stderr)
         return
     subobjects = []
     # Iterate over interfaces and subobjects
@@ -196,9 +224,10 @@ for service in connections:
                 print_service_pid_command(cursor, sep="\t")
             else:
                 rec_intro(bus, service, "/", cursor)
-    except:
-        print("Got an exception in the main loop")
-        continue
+    except KeyboardInterrupt as e:
+        print(e)
+        print("Got a keyboard exception in the main loop")
+        sys.exit(1)
 
 # Not used currently
 def get_managed_object(service="org.bluez"):

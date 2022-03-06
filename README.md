@@ -20,4 +20,5 @@ Show service and object path pairs that implement the Bluetooth profile interfac
 
     ./query.py --table --all --interface org.bluez.Profile1  --pid --command-line
 
-The --all option above asks to print also don't services that don't have a well known name. This can sometimes cause timeout problems, since some services don't reply to the introspect method calls. The timeout on my machine seems to be 25+25 seconds. Which makes scanning for object path for all services very slow. I don't yet know how to fix this.
+The --all option above asks to print also don't services that don't have a well known name. This can sometimes cause timeout problems, since some services don't implement the introspection interface. I set timeout of two seconds by default, but if you want the program execution to be faster,
+you can set the timeout to any real number with the ```--timeout``` option. 
