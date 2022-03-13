@@ -197,7 +197,8 @@ def rec_intro(bus, service, object_path, cursor, service_printed=False):
                     print("\t%s" % cursor["command_line"], end="")
                 print()
     for new_path in subobjects:
-        rec_intro(bus, service, new_path, cursor, service_printed)
+        service_printed = rec_intro(bus, service, new_path, cursor, service_printed)
+    return service_printed
 
 
 for service in connections:
